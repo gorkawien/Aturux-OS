@@ -1,4 +1,7 @@
-# arch-setup
+# Aturux-OS
+
+Aturux-OS ist a personal modification (added support for Deepin Desktop Environment (DDE) with some extra software) of the original arch-setup:
+https://github.com/jorgeluiscarrillo/arch-setup
 
 arch-setup is a console menu based (TUI) install script for Arch Linux.
 
@@ -25,8 +28,8 @@ keep the installation process as user friendly as possible.
 
      `mount -o remount,size=1G /run/archiso/cowspace`
 
-2. Clone this repository: `git clone git://github.com/jorgeluiscarrillo/arch-setup`
-3. Run the script: `cd arch-setup/ && ./setup`
+2. Clone this repository: `git clone git://github.com/gorkawien/Aturux-OS`
+3. Run the script: `cd Aturux-OS/ && chmod +x setup && ./setup`
 
 ## Features
 
@@ -54,6 +57,7 @@ Users may choose to install a complete desktop environment or a minimal window m
 * Desktop Environments
   * Budgie
   * Cinnamon
+  * Deepin (with some extra software!)
   * GNOME
   * KDE Plasma
   * LXDE
