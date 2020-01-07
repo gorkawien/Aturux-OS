@@ -1,0 +1,1217 @@
+#!/bin/bash
+
+# Load the configuration file
+init() {
+  DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$DIR"/etc/setup.conf
+  clear ; setfont Lat2-Terminus16.psfu.gz
+  dialog --title "Welcome to Arch Linux Installer" \
+    --ok-label "Begin Installation" --msgbox "Navigating the installer is \
+easy.\nYou may select options using the ARROW keys and SPACE or \
+ENTER.\nAlternate keys may also be used: '+', '-', and TAB." 7 70
+}
+
+# Proceed with installation only if there is an internet connection
+check_connection() {
+  dialog --infobox "Checking internet connection..." 3 50
+  # Check if a web page is available
+  if ! wget -q --spider archlinux.org; then
+    dialog --title "Connect to the Internet" \
+      --msgbox "The installer was unable to detect a working internet \
+connection. The installation media supports wired network devices on \
+boot. Make sure the cable is plugged in. Wireless users should use the \
+'wifi-menu' command and follow the on-screen instructions to connect to \
+a wireless connection.\n\nOnce you have a working internet connection, \
+retry running the installer." 10 80
+    reset ; exit 1
+  fi
+}
+
+# Check and disable any active mountpoints
+check_mountpoints() {
+  if mountpoint -q /mnt; then
+    dialog --infobox "Unmounting active mountpoints on $DISK..." 3 50
+    umount -R /mnt
+  fi
+
+  if free | awk '/^Swap:/ {exit !$2}'; then
+    swapoff -a
+  fi
+}
+
+# Check for LVM on the system to avoid conflicts
+check_lvm_status() {
+  # Check for an existing volume group on the selected disk
+  if vgs --noheading --nosuffix -o pv_name | grep -q "$DISK"; then
+    vg_on_pv=$(pvs -o pv_name,vg_name | grep "$DISK" | awk '{print $2}')
+    dialog --title "WARNING: LVM Exists on $DISK" \
+      --yesno "A volume group ($vg_on_pv) was detected on the selected disk \
+($DISK).\n\nIn order to proceed, the volume group ($vg_on_pv) needs to be \
+removed and all data will be lost!\n\nAre you sure you want to remove the \
+volume group '$vg_on_pv'?" 11 75
+    if [ $? -eq 0 ]; then
+      dialog --infobox "Removing $vg_on_pv from $DISK..." 3 50
+      vgchange -y -an "$vg_on_pv" &> /dev/null
+      vgremove -y "$vg_on_pv" &> /dev/null
+    else
+      dialog --title "ERROR: Unable to Partition $DISK" \
+        --msgbox "The installer can't proceed while LVM is active on \
+$DISK.\n\nIf you have any active LVM devices, please make sure they are not in \
+use and backup any data on the volume group before running the installer." 8 80
+      reset ; exit 1
+    fi
+  fi
+
+  # Check for a volume group with the same name on the system when creating LVM
+  if [ "$PARTITION_LAYOUT" != "Basic" ]; then
+    if vgs "$LVM_GROUP" &> /dev/null; then
+      dialog --title "WARNING: LVM Volume Group Exists" \
+        --yesno "A volume group with the name '$LVM_GROUP' already exists on \
+your system.\n\nIn order to proceed, the volume group ($LVM_GROUP) needs to be \
+overwritten and all data will be lost!\n\nAre you sure you want to overwrite \
+the volume group '$LVM_GROUP'?" 11 80
+      if [ $? -eq 0 ]; then
+        dialog --infobox "Removing $LVM_GROUP from $DISK..." 3 50
+        vgchange -y -an "$LVM_GROUP" &> /dev/null
+        vgremove -y "$LVM_GROUP" &> /dev/null
+      else
+        dialog --title "ERROR: Unable to Partition $DISK" \
+          --msgbox "The installer can't partition the disk because a volume \
+group with the name '$LVM_GROUP' already exists on your system.\n\nIf you have \
+any active LVM devices, please make sure they are not in use and backup any \
+data on the volume group before running the installer." 9 80
+        reset ; exit 1
+      fi
+    fi
+  fi
+}
+
+# Prompt the user to set their keyboard layout
+set_keymap() {
+  while true; do
+    KEYMAP=$(dialog --title "Set the Keyboard Layout" --nocancel \
+      --default-item "us" --menu "Select a keymap that corresponds to your \
+keyboard layout. Choose 'other' if your keymap is not listed. If you are \
+unsure, the default is 'us' (United States/QWERTY).\n\nKeymap:" 28 57 16 \
+"br-abnt2" "Brazilian Portuguese" \
+"cf" "Canadian-French" \
+"colemak" "Colemak (US)" \
+"dvorak" "Dvorak (US)" \
+"fr-latin1" "French" \
+"de-latin1" "German" \
+"it" "Italian" \
+"jp" "Japanese" \
+"pt-latin9" "Portuguese" \
+"ru4" "Russian" \
+"es" "Spanish" \
+"la-latin1" "Spanish Latinoamerican" \
+"sv-latin1" "Swedish" \
+"us" "United States" \
+"uk" "United Kingdom" \
+"other" "View all available keymaps" 3>&1 1>&2 2>&3)
+
+    if [ "$KEYMAP" = "other" ]; then
+      keymaps=()
+      for map in $(localectl list-keymaps); do
+        keymaps+=("$map" "")
+      done
+      KEYMAP=$(dialog --title "Set the Keyboard Layout" --cancel-label "Back" \
+        --menu "Select a keymap that corresponds to your keyboard layout. The \
+default is 'us' (United States/QWERTY)." 30 60 25 \
+"${keymaps[@]}" 3>&1 1>&2 2>&3)
+      if [ $? -eq 0 ]; then
+        break
+      fi
+    else
+      break
+    fi
+  done
+  dialog --infobox "Setting keymap to $KEYMAP..." 3 50
+  localectl set-keymap "$KEYMAP"
+}
+
+# Prompt the user to set the system locale
+set_locale() {
+  while true; do
+    LOCALE=$(dialog --title "Set the System Locale" --nocancel \
+      --default-item "en_US.UTF-8" --menu "Select a locale that corresponds \
+to your language and region. The locale you select will define the language \
+used by the system and other region specific information. Choose 'other' if \
+your language and/or region is not listed. If you are unsure, the default is \
+'en_US.UTF-8'.\n\nLocale:" 30 65 16 \
+"zh_CN.UTF-8" "Chinese (Simplified)" \
+"en_AU.UTF-8" "English (Australia)" \
+"en_CA.UTF-8" "English (Canada)" \
+"en_US.UTF-8" "English (United States)" \
+"en_GB.UTF-8" "English (Great Britain)" \
+"fr_FR.UTF-8" "French (France)" \
+"de_DE.UTF-8" "German (Germany)" \
+"it_IT.UTF-8" "Italian (Italy)" \
+"ja_JP.UTF-8" "Japanese (Japan)" \
+"pt_BR.UTF-8" "Portuguese (Brazil)" \
+"pt_PT.UTF-8" "Portuguese (Portugal)" \
+"ru_RU.UTF-8" "Russian (Russia)" \
+"es_MX.UTF-8" "Spanish (Mexico)" \
+"es_ES.UTF-8" "Spanish (Spain)" \
+"sv_SE.UTF-8" "Swedish (Sweden)" \
+"other" "View all available locales" 3>&1 1>&2 2>&3)
+
+    if [ "$LOCALE" = "other" ]; then
+      locales=()
+      # Read each entry in /etc/locale.gen and remove comments and spaces
+      while read -r line; do
+        locales+=("$line" "")
+      done < <(grep -E "^#?[a-z].*UTF-8" /etc/locale.gen | sed -e 's/#//' -e 's/\s.*$//')
+      LOCALE=$(dialog --title "Set the System Locale" --cancel-label "Back" \
+        --menu "Select a locale that corresponds to your language and region. \
+The locale you select will define the language used by the system and other
+region specific information. If you are unsure, the default is \
+'en_US.UTF-8'.\n\nLocale:" 30 65 16 \
+"${locales[@]}" 3>&1 1>&2 2>&3)
+      if [ $? -eq 0 ]; then
+          break
+      fi
+    else
+      break
+    fi
+  done
+}
+
+# Prompt the user to set the system time zone
+set_timezone() {
+  utc_enabled=true
+  regions=()
+  for region in \
+    $(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+    | grep -E -v '/$|posix|right' \
+    | sort); do
+    regions+=("$region" "")
+  done
+  regions+=("other" "")
+
+  while true; do
+    ZONE=$(dialog --title "Set the Time Zone" --nocancel \
+      --menu "Select your time zone.\nIf your region is not listed, select \
+'other'.\n\nTime zone:" 27 50 17 \
+"${regions[@]}" 3>&1 1>&2 2>&3)
+
+    if [ "$ZONE" != "other" ]; then
+      zone_regions=()
+      for zone_region in \
+        $(find /usr/share/zoneinfo/"${ZONE}" -mindepth 1 -maxdepth 1 -printf '%f\n' \
+        | sort); do
+        zone_regions+=("$zone_region" "")
+      done
+      SUBZONE=$(dialog --title "Set the Time Zone" --cancel-label "Back" \
+        --menu "Select your time zone.\n\nTime zone:" 27 50 17 \
+"${zone_regions[@]}" 3>&1 1>&2 2>&3)
+      if [ $? -eq 0 ]; then
+        if [ -d /usr/share/zoneinfo/"${ZONE}/${SUBZONE}" ]; then
+          subzone_regions=()
+          for subzone_region in \
+            $(find /usr/share/zoneinfo/"${ZONE}/${SUBZONE}" -mindepth 1 -maxdepth 1 -printf '%f\n' \
+            | sort); do
+            subzone_regions+=("$subzone_region" "")
+          done
+          SUBZONE_SUBREGION=$(dialog --title "Set the Time Zone" \
+            --cancel-label "Back" \
+            --menu "Select your time zone.\n\nTime zone:" 27 50 17 \
+"${subzone_regions[@]}" 3>&1 1>&2 2>&3)
+          if [ $? -eq 0 ]; then
+            ZONE="${ZONE}/${SUBZONE}/${SUBZONE_SUBREGION}"
+            break
+          fi
+        else
+          ZONE="${ZONE}/${SUBZONE}"
+          break
+        fi
+      fi
+    else
+      for other_region in \
+        $(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type f -printf '%f\n' \
+        | grep -E -v '/$|iso3166.tab|leapseconds|posixrules|tzdata.zi|zone.tab|zone1970.tab' \
+        | sort); do
+        other_regions+=("$other_region" "")
+      done
+      ZONE=$(dialog --title "Set the Time Zone" --cancel-label "Back" \
+        --menu "Select your time zone.\n\nTime zone:" 27 50 17 \
+"${other_regions[@]}" 3>&1 1>&2 2>&3)
+      if [ $? -eq 0 ]; then
+        ZONE="${ZONE}"
+        break
+      fi
+    fi
+  done
+
+  dialog --title "Set the Hardware Clock" --nocancel \
+    --yesno "Would you like to set the hardware clock from the system \
+clock using UTC time?\nIf you select no, local time will be used \
+instead.\n\nIf you are unsure, UTC time is the default." 8 85
+  if [ $? -ne 0 ]; then
+    utc_enabled=false
+  fi
+}
+
+# Prompt the user to set the system hostname
+set_hostname() {
+  while true; do
+    HOST_NAME=$(dialog --title "Set the Hostname" --nocancel \
+      --inputbox "Please enter the hostname for this system.\n\nThe hostname \
+is a single word that identifies your system to the network.\n\nHostname:" \
+12 80 "arch" 3>&1 1>&2 2>&3)
+
+    # Hostname must be alpha-numeric and may contain a dash only in between
+    if printf "%s" "$HOST_NAME" | grep -Eoq "^[a-zA-Z0-9-]{1,63}$" \
+      && [ "${HOST_NAME:0:1}" != "-" ] \
+      && [ "${HOST_NAME: -1}" != "-" ]; then
+      break
+    else
+      dialog --title "ERROR: Invalid Hostname Format" \
+        --msgbox "You entered an invalid hostname.\n\nA valid hostname may \
+contain only the numbers 0-9, upper and lowercase letters (A-Z and a-z), and \
+the minus sign. It must be at most 63 characters long, and may not begin \
+or end with a minus sign." 9 75
+    fi
+  done
+}
+
+# Prompt the user to create a password for the superuser account
+set_root_passwd(){
+  inputs_match=false
+  while ! $inputs_match; do
+    input=$(dialog --title "Set the Root Password" --clear --stdout --nocancel \
+      --insecure --passwordbox "Please enter a password for 'root', the \
+system administrative account.\n\nRoot password:" 10 75)
+    confirm_input=$(dialog --title "Set the Root Password" --clear --stdout \
+      --insecure --passwordbox "Re-enter password to verify:" 8 55)
+
+    if [ -z "$input" ]; then
+      dialog --title "ERROR: Empty Password" \
+        --msgbox "You are not allowed to have an empty password." 5 55
+    elif [ "$input" != "$confirm_input" ]; then
+      dialog --title "ERROR: Passwords Do No Match" \
+        --msgbox "The two passwords you entered did not match." 5 55
+    else
+      root_passwd="$input"
+      inputs_match=true
+    fi
+  done
+}
+
+# Prompt the user to create an unprivileged user account
+create_user() {
+  while true; do
+    FULL_NAME=$(dialog --title "Create a User Account" --nocancel \
+      --inputbox "The installer will create a user account for you. This is \
+the main user account that you will login to and use for non-administrative \
+activities.\n\nPlease enter the real name for this user. This information \
+will be used for any program that uses the user's real name such as email. \
+Entering your full name here is recommended; however, it may be left \
+blank.\n\nFull name for the new user:" 15 80 3>&1 1>&2 2>&3)
+
+    USER_NAME=$(dialog --title "Create a User Account" \
+     --cancel-label "Back" --inputbox "Please enter a username for the new \
+account.\n\nThe username should start with a lower-case letter, which can be \
+followed by any combination of numbers, more lower-case letters, or the dash \
+symbol.\n\nUsername for your account:" 13 80 3>&1 1>&2 2>&3)
+
+    if [ $? -eq 0 ]; then
+      # Username must start with lowercase letter. May contain lowercase
+      # alpha-numerics and dashes
+      if printf "%s" "$USER_NAME" | grep -Eoq "^[a-z][a-z0-9-]*$" \
+        && [ "${#USER_NAME}" -lt 33 ]; then
+        # The reserved_username file contains usernames that should be avoided
+        if grep -Fxq "$USER_NAME" "$DIR"/etc/reserved_usernames; then
+          dialog --title "ERROR: Reserved Username" \
+            --msgbox "The username you entered ($USER_NAME) is reserved for \
+use by the system. Please select a different one." 6 70
+        else 
+          inputs_match=false
+          while ! $inputs_match; do
+            input=$(dialog --title "Set the Password for $USER_NAME" --clear \
+              --stdout --nocancel --insecure --passwordbox "Please enter a \
+password for '$USER_NAME'.\n\nChoose a password for the new user:" 10 70)
+            confirm_input=$(dialog --title "Set the Password for $USER_NAME" \
+              --clear --stdout --insecure \
+              --passwordbox "Re-enter password to verify:" 8 55)
+
+            if [ -z "$input" ]; then
+              dialog --title "ERROR: Empty Password" \
+                --msgbox "You are not allowed to have an empty password." 5 55
+            elif [ "$input" != "$confirm_input" ]; then
+              dialog --title "ERROR: Passwords Do No Match" \
+                --msgbox "The two passwords you entered did not match." 5 55
+            else
+              user_passwd="$input"
+              inputs_match=true
+            fi
+          done
+          break
+        fi
+      else
+        dialog --title "ERROR: Invalid Username Format" \
+          --msgbox "You entered an invalid username.\n\nThe username must \
+start with a lower-case letter, which can be followed by any combination of \
+numbers, more lower-case letters, or the dash symbol, and must be no more \
+than 32 characters long." 9 80
+      fi
+    fi
+  done
+}
+
+# Prepare the user's selected disk for partitioning
+prepare_disk() {
+  SWAP="-"
+  swap_enabled=false
+  block_devices=()
+  # List all available block devices excluding 'rom' and 'loop'
+  for device in $(lsblk -d -n -p -r -e 7,11 -o NAME); do
+    device_size=$(lsblk -d -n -r -o SIZE "$device")
+    block_devices+=("$device" "$device_size")
+  done
+
+  check_mountpoints
+  while true; do
+    PARTITION_LAYOUT=$(dialog --title "Partition the Disks" \
+      --cancel-label "Exit to Menu" \
+      --menu "The installer will now automatically partition a disk for you. \
+If you have no preference or are unsure about which partition layout to \
+choose, the 'Basic' layout is the simplest and should be enough for most use \
+cases.\n\nPartition layout:" 14 80 3 \
+"Basic" "Use entire disk" \
+"LVM" "Use entire disk and set up LVM" \
+"Encrypted" "Use entire disk and set up encrypted LVM" 3>&1 1>&2 2>&3)
+
+    if [ $? -eq 0 ]; then
+      DISK=$(dialog --title "Set the Installation Disk" --cancel-label "Back" \
+        --menu "Select the disk for Arch Linux to be installed on. Note that \
+the disk you select will be erased, but not until you have confirmed the \
+changes.\n\nDisk to partition:" 16 55 5 \
+"${block_devices[@]}" 3>&1 1>&2 2>&3)
+
+      if [ $? -eq 0 ]; then
+        # NVME devices use nvme0n1p1, p2, p3 etc. for partition naming
+        # TODO: May need to be modified to support installing on other block
+        # devices (SD cards, USB?)
+        PREFIX=""
+        if [[ "$DISK" == *"nvme"* ]]; then
+          PREFIX="p"
+        fi
+
+        FILE_SYSTEM=$(dialog --title "Set the Filesystem for $DISK_ROOT" \
+          --nocancel --menu "Select the type of filesystem to use for the \
+specified device. If you are unsure, 'ext4' is the default.\n\nFilesystem \
+type:" 15 68 5 \
+"ext4" "Ext4 journaling filesystem" \
+"ext3" "Ext3 journaling filesystem" \
+"ext2" "Standard Linux Ext2 filesystem" \
+"btrfs" "Btrfs Copy-on-Write B-tree filesystem" \
+"xfs" "SGI's journaling filesystem" 3>&1 1>&2 2>&3)
+
+        dialog --title "Create a Swap Partition" \
+          --yesno "Would you like to create an optional swap partition? If \
+you are unsure, it is recommended to create one." 6 57
+        if [ $? -eq 0 ]; then
+          # Get the amount of RAM in the system to use as default swap size
+          mem_total=$(free --giga | awk '/^Mem:/{print $2}')
+          if [ "$mem_total" != "0" ]; then
+            mem_total="${mem_total}G"
+          else
+            mem_total=$(free --mega | awk '/^Mem:/{print $2}')
+            mem_total="${mem_total}M"
+          fi
+
+          while true; do
+            SWAP=$(dialog --title "Allocate Swap Space" \
+              --inputbox "Specify how much swap space to allocate. If you are \
+unsure, the default is to have swap space equal to the amount of RAM in your \
+system.\n\nSwap partition size (use 'M' for MiB or 'G' for GiB):" 11 80 \
+"$mem_total" 3>&1 1>&2 2>&3)
+
+            if [ $? -eq 0 ]; then
+              disk_size_bytes=$(lsblk -b -d -n -o SIZE "$DISK")
+              disk_size_mibs=$((disk_size_bytes/1024/1024))
+              disk_size_gibs=$((disk_size_mibs/1024))
+              swap_size=$(printf "%s" "$SWAP" | tr -c -d '[:digit:]')
+
+              # Input validation for swap size
+              if printf "%s" "$SWAP" | grep -Eoq "^[0-9]+[MG]$" \
+                && [ "${swap_size:0:1}" != "0" ]; then
+                if [ "${SWAP: -1}" = "M" ] \
+                  && [ "$swap_size" -lt $((disk_size_mibs - 2048)) ]; then
+                  swap_enabled=true
+                  break
+                elif [ "${SWAP: -1}" = "G" ] \
+                  && [ "$swap_size" -lt $((disk_size_gibs - 2)) ]; then
+                  swap_enabled=true
+                  break
+                else
+                  dialog --title "ERROR: Not Enough Disk Space" \
+                    --msgbox "The amount you entered exceeds the amount of \
+space available on the disk. Note that the installer sets aside an additional \
+2 GiB to have enough space for the base installation." 8 60
+                fi
+              else
+                dialog --title "ERROR: Invalid Format" \
+                  --msgbox "You entered an invalid format. Make sure to use \
+'M' for 'MiB' or 'G' for 'GiB'." 6 60
+              fi
+            else
+              break
+            fi
+          done
+        fi
+
+        dialog --title "Confirm the Partition Layout for $DISK" --defaultno \
+          --yesno "WARNING: All data on the selected disk will be lost! Make \
+sure to review your changes before continuing.\n\nDisk to partition: \
+$DISK\nPartition layout: $PARTITION_LAYOUT\nFilesystem type: \
+$FILE_SYSTEM\nSwap size: $SWAP\n\nAre you sure you want to write the \
+changes to the disk?" 13 60
+        if [ $? -eq 0 ]; then
+          check_lvm_status
+          dialog --infobox "Formatting $DISK..." 3 50
+          sgdisk --zap-all "$DISK" &> /dev/null
+          wipefs -a "$DISK" &> /dev/null
+          dialog --infobox "Partitioning $DISK..." 3 50
+          create_partition_label
+          case "$PARTITION_LAYOUT" in
+            "Basic") create_basic_layout ;;
+            "LVM") create_lvm_layout ;;
+            "Encrypted") create_encrypted_layout ;;
+          esac
+          break
+        else
+          main_menu
+        fi
+      fi
+    else
+      main_menu
+    fi
+  done
+}
+
+# Create a new partition label on the selected disk
+create_partition_label() {
+  # UEFI systems use GPT partitioning and BIOS/CSM systems use MBR
+  if $UEFI; then
+    parted -s "$DISK" mklabel gpt &> /dev/null
+  else
+    parted -s "$DISK" mklabel msdos &> /dev/null
+  fi
+  if [ $? -ne 0 ]; then
+    dialog --title "ERROR: Unable to Partition $DISK" \
+      --msgbox "The installer encountered an error while partitioning \
+$DISK.\n\nMake sure the disk you selected is not active before running the \
+installer. If this error keeps occuring, please reboot your machine and try \
+again." 8 80
+    reset ; exit 1
+  fi
+}
+
+# Partition the selected disk where everything is installed on one partition
+create_basic_layout() {
+  if $UEFI; then
+    BOOT_PART="${DISK}${PREFIX}1"
+    ROOT_PART="${DISK}${PREFIX}2"
+    if $swap_enabled; then
+      SWAP_PART="${DISK}${PREFIX}3"
+      sgdisk -n 1:0:+512M -n 2:0:-"$SWAP" -n 3:-"$SWAP":-0 \
+        -t 1:ef00 -t 2:8300 -t 3:8200 "$DISK" &> /dev/null
+      mkswap "$SWAP_PART" &> /dev/null
+      swapon "$SWAP_PART"
+    else
+      sgdisk -n 1:0:+512M -n 2:0:0 -t 1:ef00 -t 2:8300 "$DISK" &> /dev/null
+    fi
+    mkfs.fat -F32 "$BOOT_PART" &> /dev/null
+  else
+    ROOT_PART="${DISK}${PREFIX}1"
+    if $swap_enabled; then
+      SWAP_PART="${DISK}${PREFIX}2"
+      echo -e "n\np\n1\n\n-${SWAP}\nn\np\n2\n\n\nt\n2\n82\nw" \
+        | fdisk "$DISK" &> /dev/null
+      mkswap "$SWAP_PART" &> /dev/null
+      swapon "$SWAP_PART"
+    else
+      echo -e "n\np\n1\n\n\nw" | fdisk "$DISK" &> /dev/null
+    fi
+  fi
+
+  case "$FILE_SYSTEM" in
+    btrfs|xfs) mkfs."$FILE_SYSTEM" -f "$ROOT_PART" &> /dev/null ;;
+    *) mkfs."$FILE_SYSTEM" "$ROOT_PART" &> /dev/null ;;
+  esac
+  mount "$ROOT_PART" /mnt
+  if [ $? -eq 0 ]; then
+    mounted=true
+  fi
+  if $UEFI; then
+    mkdir /mnt/boot
+    mount "$BOOT_PART" /mnt/boot
+  fi
+}
+
+# Partition the selected disk and configure LVM
+create_lvm_layout() {
+  if $UEFI; then
+    BOOT_PART="${DISK}${PREFIX}1"
+    ROOT_PART="${DISK}${PREFIX}2"
+    sgdisk -n 1:0:+512M -n 2:0:0 -t 1:ef00 -t 2:8e00 "$DISK" &> /dev/null
+    mkfs.fat -F32 "$BOOT_PART" &> /dev/null
+  else
+    ROOT_PART="${DISK}${PREFIX}1"
+    echo -e "n\np\n1\n\n\nt\n8e\nw" | fdisk "$DISK" &> /dev/null
+  fi
+
+  dialog --infobox "Configuring LVM on $ROOT_PART..." 3 50
+  pvcreate -y "$ROOT_PART" &> /dev/null
+  vgcreate -y "$LVM_GROUP" "$ROOT_PART" &> /dev/null
+  if $swap_enabled; then
+    lvcreate -y -L "$SWAP" "$LVM_GROUP" -n "$LVM_SWAP" &> /dev/null
+    lvcreate -y -l 100%FREE "$LVM_GROUP" -n "$LVM_ROOT" &> /dev/null
+    mkswap "/dev/${LVM_GROUP}/${LVM_SWAP}" &> /dev/null
+    swapon "/dev/${LVM_GROUP}/${LVM_SWAP}"
+  else
+    lvcreate -y -l 100%FREE "$LVM_GROUP" -n "$LVM_ROOT" &> /dev/null
+  fi
+
+  case "$FILE_SYSTEM" in
+    btrfs|xfs) mkfs."$FILE_SYSTEM" -f "/dev/${LVM_GROUP}/${LVM_ROOT}" &> /dev/null ;;
+    *) mkfs."$FILE_SYSTEM" "/dev/${LVM_GROUP}/${LVM_ROOT}" &> /dev/null ;;
+  esac
+  mount "/dev/${LVM_GROUP}/${LVM_ROOT}" /mnt
+  if [ $? -eq 0 ]; then
+    mounted=true
+  fi
+  if $UEFI; then
+    mkdir /mnt/boot
+    mount "$BOOT_PART" /mnt/boot
+  fi
+}
+
+# Partition the selected disk and set up root disk encryption (LVM on LUKS)
+create_encrypted_layout() {
+  # /boot is left unencrypted
+  BOOT_PART="${DISK}${PREFIX}1"
+  ROOT_PART="${DISK}${PREFIX}2"
+  if $UEFI; then
+    sgdisk -n 1:0:+512M -n 2:0:0 -t 1:ef00 -t 2:8e00 "$DISK" &> /dev/null
+    mkfs.fat -F32 "$BOOT_PART" &> /dev/null
+  else
+    echo -e "n\np\n1\n\n+512M\nn\np\n2\n\n\nt\n2\n8e\nw" | fdisk "$DISK" &> /dev/null
+    mkfs.ext4 "$BOOT_PART" &> /dev/null
+  fi
+
+  inputs_match=false
+  while ! $inputs_match; do
+    input=$(dialog --title "Encrypt $ROOT_PART" --clear --stdout \
+      --insecure --passwordbox "Enter a passphrase to encrypt \
+$ROOT_PART.\n\nThe overall strength of the encryption process depends \
+strongly on this passphrase, therefore you should set a passphrase that is \
+not easy to guess.\n\nNote that the passphrase you enter will be required \
+each time on boot.\n\nEncryption passphrase:" 15 80)
+
+    if [ $? -eq 0 ]; then
+      confirm_input=$(dialog --title "Encrypt $ROOT_PART" --clear --stdout \
+        --insecure --passwordbox "Re-enter passphrase to verify:" 8 55)
+
+      if [ -z "$input" ]; then
+        dialog --title "ERROR: Empty Passphrase" \
+          --msgbox "You are not allowed to have an empty passphrase." 5 55
+      elif [ "$input" != "$confirm_input" ]; then
+        dialog --title "ERROR: Passphrases Do No Match" \
+          --msgbox "The two passphrases you entered did not match." 5 55
+      elif [ "${#input}" -lt 8 ]; then
+        dialog --title "WARNING: Weak Passphrase" --defaultno \
+          --yesno "The passphrase you entered is less than 8 characters which \
+is considered insecure.\n\nContinue using a weak passphrase?"  8 60
+        if [ $? -eq 0 ]; then
+          inputs_match=true
+        fi
+      else
+        inputs_match=true
+      fi
+    else
+      dialog --title "Revert Partition Changes" --defaultno \
+        --yesno "Are you sure you want to cancel the encryption \
+process? If you choose yes, you will be returned to the partition menu." 7 65
+      if [ $? -eq 0 ]; then
+        prepare_disk
+      fi
+    fi
+  done
+
+  dialog --infobox "Encrypting $ROOT_PART..." 3 50
+  printf "%s" "$input" | cryptsetup luksFormat "$ROOT_PART" - &> /dev/null
+  printf "%s" "$input" | cryptsetup open "$ROOT_PART" "$CRYPT_DEVICE_NAME" -
+  dialog --infobox "Configuring LVM on $ROOT_PART..." 3 50
+  pvcreate -y "/dev/mapper/${CRYPT_DEVICE_NAME}" &> /dev/null
+  vgcreate -y "$LVM_GROUP" "/dev/mapper/${CRYPT_DEVICE_NAME}" &> /dev/null
+
+  if $swap_enabled; then
+    lvcreate -y -L "$SWAP" "$LVM_GROUP" -n "$LVM_SWAP" &> /dev/null
+    lvcreate -y -l 100%FREE "$LVM_GROUP" -n "$LVM_ROOT" &> /dev/null
+    mkswap "/dev/mapper/${LVM_GROUP}-${LVM_SWAP}" &> /dev/null
+    swapon "/dev/mapper/${LVM_GROUP}-${LVM_SWAP}"
+  else
+    lvcreate -y -l 100%FREE "$LVM_GROUP" -n "$LVM_ROOT" &> /dev/null
+  fi
+
+  case "$FILE_SYSTEM" in
+    btrfs|xfs) mkfs."$FILE_SYSTEM" -f "/dev/mapper/${LVM_GROUP}-${LVM_ROOT}" &> /dev/null ;;
+    *) mkfs."$FILE_SYSTEM" "/dev/mapper/${LVM_GROUP}-${LVM_ROOT}" &> /dev/null ;;
+  esac
+  mount "/dev/mapper/${LVM_GROUP}-${LVM_ROOT}" /mnt
+  if [ $? -eq 0 ]; then
+    mounted=true
+  fi
+  mkdir /mnt/boot
+  mount "$BOOT_PART" /mnt/boot
+}
+
+# Use the reflector script to update the pacman mirror list
+update_mirrorlist() {
+  dialog --title "Update the Mirror List" \
+    --yesno "Would you like to update the Arch Linux mirror list?\n\nUpdating \
+the mirror list will speed up the download of packages. If you select no, \
+your download speed may be affected." 8 70
+
+  if [ $? -eq 0 ]; then
+    cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.backup
+    dialog --infobox "Installing reflector..." 3 50
+    pacman -Sy --noconfirm reflector &> /dev/null
+    dialog --infobox "Updating pacman mirror list..." 3 50
+    # Sort the 50 most recently synchronized mirrors by download speed
+    reflector --latest 50 --sort rate --save /etc/pacman.d/mirrorlist
+  fi
+}
+
+# Prompt the user to install the base packages for the system
+configure_install() {
+  bluetooth_enabled=false
+  dm_enabled=false
+  multilib=false
+  DESKTOP_PACKAGES=()
+
+  if $UEFI; then
+    DESKTOP_PACKAGES+=('efibootmgr')
+  fi
+
+  if [ "$PARTITION_LAYOUT" = "LVM" ]; then
+    DESKTOP_PACKAGES+=('lvm2')
+  elif [ "$PARTITION_LAYOUT" = "Encrypted" ]; then
+    DESKTOP_PACKAGES+=('lvm2' 'cryptsetup')
+  fi
+
+  if [ "$FILE_SYSTEM" = "btrfs" ]; then
+    DESKTOP_PACKAGES+=('btrfs-progs')
+  elif [ "$FILE_SYSTEM" = "xfs" ]; then
+    DESKTOP_PACKAGES+=('xfsprogs')
+  fi
+
+  if [ "$architecture" = "x86_64" ]; then
+    dialog --title "Enable multilib" \
+      --yesno "Would you like to enable the 'multilib' repository?\n\nBy \
+default, Arch only includes 64-bit software in its repositories. The \
+'multilib' repository contains 32-bit software that is compatible on a 64-bit \
+system (e.g. wine, steam, etc)." 9 70
+    if [ $? -eq 0 ]; then
+      multilib=true
+    fi
+  fi
+
+  while true; do
+    DESKTOP=$(dialog --title "Choose your Graphical Environment" --no-cancel \
+      --menu "Select the style of graphical environment you wish to \
+use.\n\nGraphical environment:" 12 75 3 \
+"Desktop Environment" "Traditional complete graphical user interface" \
+"Window Manager" "Standalone minimal graphical user interface" \
+"None" "Command-line only interface" 3>&1 1>&2 2>&3)
+
+    if [ "$DESKTOP" = "Desktop Environment" ]; then
+      GUI=$(dialog --title "Select a Desktop Environment" \
+        --cancel-label "Back" \
+        --menu "Select a desktop environment to install:" 15 65 8 \
+"Budgie" "Modern GNOME based desktop" \
+"Cinnamon" "Traditional desktop experience" \
+"Deepin" "A balanced desktop" \
+"GNOME" "Modern simplicity focused desktop" \
+"KDE Plasma" "Full featured QT based desktop" \
+"LXDE" "Lightweight and efficient desktop" \
+"LXQT" "Lightweight and efficient QT based desktop" \
+"MATE" "Continuation of the GNOME 2 desktop" \
+"Xfce" "Lightweight and modular desktop" 3>&1 1>&2 2>&3)
+      if [ $? -eq 0 ]; then
+        break
+      fi
+    elif [ "$DESKTOP" = "Window Manager" ]; then
+      GUI=$(dialog --title "Select a Window Manager" \
+        --cancel-label "Back" \
+        --menu "Select a window manager to install:" 13 75 6 \
+"awesome" "Highly configurable, dynamic window manager" \
+"bspwm" "Tiling window manager based on binary space partitioning" \
+"Fluxbox" "Stacking window manager based on Blackbox" \
+"i3" "Dynamic tiling window manager inspired by wmii" \
+"Openbox" "Highly configurable, stacking window manager" \
+"xmonad" "Dynamic tiling window manager configured in Haskell" 3>&1 1>&2 2>&3)
+      if [ $? -eq 0 ]; then
+        break
+      fi
+    else
+      break
+    fi
+  done
+
+  if [ "$DESKTOP" != "None" ]; then
+    DESKTOP_PACKAGES+=("${DESKTOP_DEFAULTS[@]}")
+    case "$GUI" in
+      "Budgie") DESKTOP_PACKAGES+=('budgie-desktop' 'gnome-control-center')
+                dialog --title "Install Extras" --yesno "Would you like to \
+install the 'gnome' group?\n\nIt contains additional utilities and \
+applications that integrate well with the Budgie desktop." 8 60
+                if [ $? -eq 0 ]; then
+                  DESKTOP_PACKAGES+=('gnome')
+                fi
+                xinit_config="export XDG_CURRENT_DESKTOP=Budgie:GNOME ; exec budgie-desktop"
+                ;;
+      "Cinnamon") DESKTOP_PACKAGES+=('cinnamon' 'cinnamon-translations' 'nemo-fileroller')
+                  xinit_config="exec cinnamon-session"
+                  ;;
+                   "Deepin") DESKTOP_PACKAGES+=('deepin' 'deepin-editor' 'deepin-terminal' 'firefox' 'thunderbird' 'telegram-desktop' 'smplayer' 'clementine' 'cheese' 'spectacle' 'file-roller' 'variety' 'qbittorrent' 'gthumb' 'evince' 'calibre' 'libreoffice-still' 'kodi' 'simplescreenrecorder' 'dconf-editor' 'gparted' 'aria2' 'pdfarranger' 'hplip' 'rapid-photo-downloader' 'git''wget' 'neofetch''redshift' 'deepin-community-wallpapers')
+              xinit_config="exec startdde"
+              ;;
+      "GNOME") DESKTOP_PACKAGES+=('gnome')
+               dialog --title "Install Extras" --yesno "Would you like to \
+install the 'gnome-extra' group?\n\nIt contains additional utilities and \
+applications that integrate well with the GNOME desktop." 8 60
+               if [ $? -eq 0 ]; then
+                 DESKTOP_PACKAGES+=('gnome-extra')
+               fi
+               xinit_config="exec gnome-session"
+               ;;
+      "KDE Plasma") DESKTOP_PACKAGES+=('plasma')
+                    dialog --title "Install Extras" --yesno "Would you like \
+to install the 'kde-applications' group?\n\nIt contains additional utilities \
+and applications that integrate well with the Plasma desktop." 8 60 
+                    if [ $? -eq 0 ]; then
+                      DESKTOP_PACKAGES+=('kde-applications')
+                    fi
+                    xinit_config="exec startkde"
+                    ;;
+      "LXDE") DESKTOP_PACKAGES+=('lxde')
+              xinit_config="exec startlxde"
+              ;;
+      "LXQT") DESKTOP_PACKAGES+=('lxqt' 'breeze-icons')
+              xinit_config="exec startlxqt"
+              ;;
+      "MATE") DESKTOP_PACKAGES+=('mate' 'gtk-engines' 'gtk-engine-murrine')
+              dialog --title "Install Extras" --yesno "Would you like to \
+install the 'mate-extra' group?\n\nIt contains additional utilities and \
+applications that integrate well with the MATE desktop." 8 60
+              if [ $? -eq 0 ]; then
+                DESKTOP_PACKAGES+=('mate-extra')
+              fi
+              xinit_config="exec mate-session"
+              ;;
+      "Xfce") DESKTOP_PACKAGES+=('xfce4')
+              dialog --title "Install Extras" --yesno "Would you like to \
+install the 'xfce4-goodies' group?\n\nIt contains additional utilities and \
+applications that integrate well with the Xfce desktop." 8 60
+              if [ $? -eq 0 ]; then
+                DESKTOP_PACKAGES+=('xfce4-goodies')
+              fi
+              xinit_config="exec startxfce4"
+              ;;
+      "awesome") DESKTOP_PACKAGES+=('awesome')
+                 xinit_config="exec awesome"
+                 ;;
+      "bspwm") DESKTOP_PACKAGES+=('bspwm' 'sxhkd')
+               xinit_config="sxhkd & ; exec bspwm"
+               ;;
+      "Fluxbox") DESKTOP_PACKAGES+=('fluxbox')
+                 xinit_config="exec startfluxbox"
+                 ;;
+      "i3") DESKTOP_PACKAGES+=('i3')
+            xinit_config="exec i3"
+            ;;
+      "Openbox") DESKTOP_PACKAGES+=('openbox')
+                 xinit_config="exec openbox-session"
+                 ;;
+      "xmonad") DESKTOP_PACKAGES+=('xmonad' 'xmonad-contrib')
+                xinit_config="exec xmonad"
+                ;;
+    esac
+
+    # GNOME already has networkmanager applet built-in. Plasma uses plasma-nm
+    if [ "$GUI" != "GNOME" ]; then
+      if [ "$GUI" = "KDE Plasma" ]; then
+        DESKTOP_PACKAGES+=('plasma-nm')
+      else
+        DESKTOP_PACKAGES+=('network-manager-applet' 'gnome-keyring')
+      fi
+    fi
+
+    # Check for available bluetooth devices
+    if $bluetooth; then
+      dialog --title "Enable Bluetooth" \
+        --yesno "The installer has detected Bluetooth support on your \
+system.\n\nWould you like to install and enable the Bluetooth service?" 7 65
+      if [ $? -eq 0 ]; then
+        bluetooth_enabled=true
+        DESKTOP_PACKAGES+=('bluez' 'bluez-utils' 'pulseaudio-bluetooth')
+        dialog --title "Install Bluetooth Manager" \
+          --yesno "Would you like to install a graphical Bluetooth \
+manager?\n\nThe utility that best integrates with the desktop environment \
+you selected will be installed." 8 60
+        if [ $? -eq 0 ]; then
+          case "$GUI" in
+            "Budgie"|"GNOME") DESKTOP_PACKAGES+=('gnome-bluetooth') ;;
+            "Cinnamon") DESKTOP_PACKAGES+=('blueberry') ;;
+            "KDE Plasma") DESKTOP_PACKAGES+=('bluedevil') ;;
+            *) DESKTOP_PACKAGES+=('blueman') ;;
+          esac
+        fi
+      fi
+    fi
+
+    dialog --title "Install a Display Manager" \
+      --yesno "Would you like to install a graphical login manager?\n\nIf you \
+select no, 'xinit' will be installed so you can manually start Xorg with the\
+'startx' command." 8 60
+    if [ $? -eq 0 ]; then
+      DM=$(dialog --title "Install a Display Manager" \
+          --menu "Select a display manager to install:" 10 50 3 \
+"gdm" "GNOME Display Manager" \
+"lightdm" "Lightweight Display Manager" \
+"sddm" "Simple Desktop Display Manager" 3>&1 1>&2 2>&3)
+      if [ $? -eq 0 ]; then
+        dm_enabled=true
+        case "$DM" in
+          "gdm") DESKTOP_PACKAGES+=('gdm') ;;
+          "lightdm") DESKTOP_PACKAGES+=('lightdm' 'lightdm-gtk-greeter' 'lightdm-gtk-greeter-settings') ;;
+          "sddm") DESKTOP_PACKAGES+=('sddm') ;;
+        esac
+      else
+        DESKTOP_PACKAGES+=('xorg-xinit')
+        dialog --title "xinit" \
+          --msgbox "No display manager selected. Installing 'xorg-xinit'. The \
+installer will create a xinitrc file for you.\n\nYou will need to use the \
+'startx' command to start the graphical environment once you login." 9 57
+      fi
+    else
+      DESKTOP_PACKAGES+=('xorg-xinit')
+      dialog --title "xinit" \
+        --msgbox "No display manager selected. Installing 'xorg-xinit'. The \
+installer will create a xinitrc file for you.\n\nYou will need to use the \
+'startx' command to start the graphical environment once you login." 9 57
+    fi
+
+    # Intel/AMD/NVIDIA drivers are not installed on virtual machines
+    if [ "$hypervisor" = "none" ]; then
+      if lspci | grep "VGA" | grep -iq "Intel"; then
+        DESKTOP_PACKAGES+=('xf86-video-intel')
+      fi
+
+      if lspci | grep "VGA" | grep -iq "NVIDIA"; then
+        gpu_driver=$(dialog --title "Install Graphics Driver" --no-cancel \
+          --menu "The installer has detected an NVIDIA graphics card on your \
+system.\n\nYou may choose to install either the open-source or proprietary \
+driver. If you are unsure, the proprietary driver usually offers the best \
+performance.\n\nGraphics driver:" 16 70 3 \
+"NVIDIA" "Proprietary NVIDIA driver" \
+"Nouveau" "Open-source Nouveau driver" \
+"None" "-" 3>&1 1>&2 2>&3)
+        if [ "$gpu_driver" = "NVIDIA" ]; then
+          # Get only the GPU PCI device ID
+          gpu_pci_id=$(lspci -nn  | grep -ioP 'VGA.*NVIDIA.*\[\K[\w:]+' | sed 's/.*://')
+          # Automatically install the correct driver based on the PCI ID data
+          if grep -Fq "$gpu_pci_id" "$DIR"/etc/nvidia_390_pci_ids; then
+            DESKTOP_PACKAGES+=('nvidia-390xx' 'nvidia-390xx-utils' 'nvidia-390xx-settings')
+          elif grep -Fq "$gpu_pci_id" "$DIR"/etc/nvidia_340_pci_ids; then
+            # Support for nvidia-340xx has been dropped, use nouveau
+            dialog --title "Install Graphics Driver" \
+              --msgbox "Proprietary driver support has ended for your graphics \
+card.\n\nThe open-source Nouveau driver will be installed." 7 65
+            DESKTOP_PACKAGES+=('xf86-video-nouveau' 'mesa')
+          else
+            DESKTOP_PACKAGES+=('nvidia' 'nvidia-utils' 'nvidia-settings')
+          fi
+        else
+          DESKTOP_PACKAGES+=('xf86-video-nouveau' 'mesa')
+        fi
+      elif lspci | grep "VGA" | grep -q "ATI\|AMD"; then
+        gpu_driver=$(dialog --title "Install Graphics Driver" --no-cancel \
+          --menu "The installer has detected an ATI/AMD graphics card on your \
+system.\nThe appropriate driver to install depends on how modern your GPU \
+is.\n\nIf you are unsure, the ATI driver is generally more stable and \
+supports the majority of ATI/AMD GPUs. If you have one of the latest AMD GPUs \
+(Volcanic Islands or newer), then you should install the AMDGPU \
+driver.\n\nGraphics driver:" 17 75 3 \
+"ATI" "Open-source ATI/AMD Radeon driver" \
+"AMDGPU" "Open-source driver for the latest AMD GPUs" \
+"None" "-" 3>&1 1>&2 2>&3)
+        if [ "$gpu_driver" = "ATI" ]; then
+          DESKTOP_PACKAGES+=('xf86-video-ati' 'mesa')
+        else
+          DESKTOP_PACKAGES+=('xf86-video-amdgpu' 'mesa')
+        fi
+      fi
+    else
+      dialog --title "Virtual Machine Detected" \
+        --msgbox "The installer has detected a virtualized environment: \
+$hypervisor\n\nAny required drivers or utilities will be \
+installed for you." 7 70
+      case "$hypervisor" in
+        "vmware") DESKTOP_PACKAGES+=('open-vm-tools' 'xf86-video-vmware' 'xf86-input-vmmouse' 'mesa' 'gtkmm' 'gtkmm3') ;;
+        "oracle") DESKTOP_PACKAGES+=('virtualbox-guest-utils' 'virtualbox-guest-modules-arch') ;;
+        "parallels") DESKTOP_PACKAGES+=('xf86-video-vesa') ;;
+        *) DESKTOP_PACKAGES+=('xf86-video-fbdev') ;;
+      esac
+    fi
+  fi
+}
+
+install_base() {
+  while true; do
+    dialog --title "Installation Summary" \
+      --yesno "The base system is ready to be installed on $DISK.\nThe \
+following packages will be installed:\n\n${BASE_PACKAGES[*]} \
+${DESKTOP_PACKAGES[*]}\n\nInstall Arch Linux?" 0 0
+    if [ $? -eq 0 ]; then
+      clear
+      pacstrap /mnt "${BASE_PACKAGES[@]}" "${BASE_EXTRAS[@]}" "${DESKTOP_PACKAGES[@]}"
+      if [ $? -eq 0 ]; then
+        installed=true
+      else
+        dialog --title "ERROR: Install Failed" \
+          --msgbox "Arch Linux failed to install on $DISK.\n\nThe installer \
+encountered an error while executing pacstrap." 7 65
+        reset ; exit 1
+      fi
+      break
+    else
+      dialog --title "Cancel Installation" \
+        --yesno "Are you sure you want to exit to the main menu?" 5 55
+      if [ $? -eq 0 ]; then
+        main_menu
+      fi
+    fi
+  done
+}
+
+# Apply the user's system settings
+configure_system() {
+  dialog --infobox "Generating the fstab file..." 3 50
+  # Generate the fstab file
+  genfstab -U -p /mnt >> /mnt/etc/fstab
+
+  dialog --infobox "Adjusting time zone and system clock..." 3 50
+  # Set the time zone and adjust the hardware clock to the system time (UTC)
+  ln -sf /usr/share/zoneinfo/"$ZONE" /mnt/etc/localtime
+  if $utc_enabled; then
+    arch-chroot /mnt hwclock --systohc --utc
+  else
+    arch-chroot /mnt hwclock --systohc --localtime
+  fi
+
+  dialog --infobox "Generating locales..." 3 50
+  # Set locale and keyboard layout if applicable and generate the locales
+  sed -i "s/#en_US.UTF-8/en_US.UTF-8/" /mnt/etc/locale.gen
+  if [ "$LOCALE" != "en_US.UTF-8" ]; then
+    sed -i "s/#$LOCALE/$LOCALE/" /mnt/etc/locale.gen
+  fi
+  echo "LANG=$LOCALE" > /mnt/etc/locale.conf
+  if [ "$KEYMAP" != "us" ]; then
+    echo "KEYMAP=$KEYMAP" > /mnt/etc/vconsole.conf
+  fi
+  arch-chroot /mnt locale-gen &> /dev/null
+
+  dialog --infobox "Configuring system hostname..." 3 50
+  # Set the hostname and add a matching entry to /etc/hosts
+  echo "$HOST_NAME" > /mnt/etc/hostname
+  echo -e "127.0.0.1\tlocalhost\n::1\t\tlocalhost\n127.0.1.1\t$HOST_NAME.localdomain\t$HOST_NAME" >> /mnt/etc/hosts
+
+  # Modify mkinitcpio.conf hooks if required and generate a new initramfs
+  if [ "$PARTITION_LAYOUT" != "Basic" ]; then
+    dialog --infobox "Recreating the initramfs image..." 3 50
+    if [ "$PARTITION_LAYOUT" = "LVM" ]; then
+      sed -i "s/HOOKS=.*/HOOKS=(base udev autodetect modconf block lvm2 filesystems fsck)/" /mnt/etc/mkinitcpio.conf
+    elif [ "$PARTITION_LAYOUT" = "Encrypted" ]; then
+      sed -i "s/HOOKS=.*/HOOKS=(base udev autodetect keyboard keymap consolefont modconf block encrypt lvm2 filesystems fsck)/" /mnt/etc/mkinitcpio.conf
+    fi
+    arch-chroot /mnt mkinitcpio -p linux &> /dev/null
+  fi
+
+  dialog --infobox "Installing GRUB to $DISK..." 3 50
+  # Append the required kernel parameters to unlock an encrypted partition
+  if [ "$PARTITION_LAYOUT" = "Encrypted" ]; then
+    root_part_uuid=$(blkid -s UUID -o value "$ROOT_PART")
+    sed -i "s/GRUB_CMDLINE_LINUX=\"\(.*\)\"/GRUB_CMDLINE_LINUX=\"\1 cryptdevice=UUID=$root_part_uuid:$CRYPT_DEVICE_NAME root=\/dev\/mapper\/$LVM_GROUP-$LVM_ROOT\"/" /mnt/etc/default/grub
+  fi
+
+  # Remove the 'quiet' parameter to have a verbose output during boot
+  sed -i 's/\(GRUB_CMDLINE_LINUX_DEFAULT=\).*/\1\"\"/g' /mnt/etc/default/grub
+
+  # Install GRUB to the target disk and generate the main configuration file
+  if $UEFI; then
+    arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB &> /dev/null
+  else
+    arch-chroot /mnt grub-install --target=i386-pc "$DISK" &> /dev/null
+  fi
+  dialog --infobox "Generating the GRUB configuration file..." 3 50
+  arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg &> /dev/null
+
+  dialog --infobox "Configuring user accounts..." 3 50
+  # Set the root password and create a user account
+  arch-chroot /mnt chpasswd <<<"root:$root_passwd"
+  # User is added to the 'wheel' group and is granted root privileges with sudo
+  if [ -z "$FULL_NAME" ]; then
+    arch-chroot /mnt useradd -m -g users -G wheel -s /bin/bash "$USER_NAME"
+  else
+    arch-chroot /mnt useradd -m -g users -G wheel -c "$FULL_NAME" -s /bin/bash "$USER_NAME"
+  fi
+  arch-chroot /mnt chpasswd <<<"$USER_NAME:$user_passwd"
+  sed -i 's/# %wheel ALL=(ALL) ALL$/%wheel ALL=(ALL) ALL/' /mnt/etc/sudoers
+
+  # Uncomment multilib in pacman.conf and refresh the database
+  if $multilib; then
+    sed -i "/\[multilib\]/,/Include/"'s/^#//' /mnt/etc/pacman.conf
+    dialog --infobox "Refreshing pacman database..." 3 50
+    arch-chroot /mnt pacman -Sy &> /dev/null
+  fi
+
+  dialog --infobox "Enabling NetworkManager service..." 3 50
+  arch-chroot /mnt systemctl enable NetworkManager.service &> /dev/null
+
+  if $bluetooth_enabled; then
+    dialog --infobox "Enabling Bluetooth service..." 3 50
+    arch-chroot /mnt systemctl enable bluetooth.service &> /dev/null
+  fi
+
+  # xinitrc is created in user's home directory if display manager is not set
+  if [ "$DESKTOP" != "None" ] && ! $dm_enabled; then
+    dialog --infobox "Generating the xinitrc file..." 3 50
+    echo "$xinit_config" > /mnt/home/"$USER_NAME"/.xinitrc
+  elif $dm_enabled; then
+    dialog --infobox "Enabling display manager service..." 3 50
+    arch-chroot /mnt systemctl enable "$DM".service &> /dev/null
+  fi
+
+  if [ "$hypervisor" != "none" ]; then
+    if [ "$hypervisor" = "oracle" ]; then
+      dialog --infobox "Enabling VirtualBox modules..." 3 50
+      arch-chroot /mnt systemctl enable vboxservice.service &> /dev/null
+    elif [ "$hypervisor" = "vmware" ]; then
+      dialog --infobox "Enabling VMware Open-VM-Tools..." 3 50
+      arch-chroot /mnt systemctl enable vmtoolsd.service &> /dev/null
+      arch-chroot /mnt systemctl enable vmware-vmblock-fuse.service &> /dev/null
+    fi
+  fi
+}
+
+# System power menu
+reboot_system() {
+  if $installed; then
+    while true; do
+      choice=$(dialog --title "Reboot System" --nocancel \
+        --menu "Arch Linux has finished installing.\nYou must restart your \
+system to boot Arch.\n\nPlease select one of the following options:" 13 60 3 \
+"Reboot" "Reboot system" \
+"Poweroff" "Poweroff system" \
+"Exit" "Unmount system and exit to CLI" 3>&1 1>&2 2>&3)
+
+      dialog --infobox "Unmounting partitions on /mnt..." 3 50
+      umount -R /mnt
+      case "$choice" in
+        "Reboot") reset ; reboot ; exit ;;
+        "Poweroff") reset ; poweroff ; exit ;;
+        "Exit") reset ; exit ;;
+      esac
+    done
+  else
+    dialog --title "Reboot System" \
+      --yesno "The installation is incomplete.\n\nAre you sure you want to \
+reboot your system?" 7 60
+    if [ $? -eq 0 ]; then
+      check_mountpoints
+      reset ; reboot ; exit
+    fi
+  fi
+}
+
+# Menu which allows the user to navigate the installer
+main_menu() {
+  while true; do
+    choice=$(dialog --title "Main Menu" --nocancel \
+      --menu "Select an option below using the UP/DOWN keys and SPACE or \
+ENTER.\nAlternate keys may also be used: '+', '-', and TAB." 19 70 11 \
+"KEYMAP" "Set the keyboard layout" \
+"LOCALE" "Set the system locale" \
+"TIMEZONE" "Set the system time zone" \
+"HOSTNAME" "Set the system's hostname" \
+"ROOT PASSWORD" "Set the root password" \
+"CREATE USER" "Create your user account" \
+"PARTITION" "Partition the installation drive" \
+"UPDATE MIRRORS" "Update the pacman mirror list" \
+"INSTALL" "Install Arch Linux" \
+"REBOOT" "Reboot system" \
+"EXIT" "Exit Arch Linux Installer" 3>&1 1>&2 2>&3)
+
+    case "$choice" in
+      "KEYMAP") set_keymap ;;
+      "LOCALE") set_locale ;;
+      "TIMEZONE") set_timezone ;;
+      "HOSTNAME") set_hostname ;;
+      "ROOT PASSWORD") set_root_passwd ;;
+      "CREATE USER") create_user ;;
+      "PARTITION") if $mounted; then
+                     dialog --title "Partition the Disks" \
+                       --yesno "A disk is mounted on the system and ready for \
+installation.\n\nAre you sure you want to return to partitioning?" 7 70
+                     if [ $? -eq 0 ]; then
+                       mounted=false
+                       prepare_disk
+                     fi
+                   else
+                    prepare_disk
+                   fi
+                   ;;
+      "UPDATE MIRRORS") update_mirrorlist ;;
+      "INSTALL") if $mounted; then
+                   configure_install
+                   install_base
+                   configure_system
+                   reboot_system
+                 else
+                   dialog --title "ERROR: No Filesytem Mounted" \
+                     --yesno "The installer was unable to detect a \
+mounted filesystem.\n\nReturn to partitioning?" 7 60
+                   if [ $? -eq 0 ]; then
+                     prepare_disk
+                   fi
+                 fi
+                 ;;
+      "REBOOT") reboot_system ;;
+      "EXIT") reset ; exit ;;
+    esac
+  done
+}
+
+main() {
+  init
+  check_connection
+  set_keymap
+  set_locale
+  set_timezone
+  set_hostname
+  set_root_passwd
+  create_user
+  prepare_disk
+  update_mirrorlist
+  configure_install
+  install_base
+  configure_system
+  reboot_system
+}
+
+main
