@@ -777,7 +777,7 @@ applications that integrate well with the Budgie desktop." 8 60
       "Cinnamon") DESKTOP_PACKAGES+=('cinnamon' 'cinnamon-translations' 'nemo-fileroller')
                   xinit_config="exec cinnamon-session"
                   ;;
-                   "Deepin") DESKTOP_PACKAGES+=('deepin' 'deepin-editor' 'deepin-terminal' 'firefox' 'thunderbird' 'telegram-desktop' 'smplayer' 'clementine' 'cheese' 'spectacle' 'file-roller' 'variety' 'qbittorrent' 'gthumb' 'evince' 'calibre' 'libreoffice-still' 'kodi' 'simplescreenrecorder' 'dconf-editor' 'gparted' 'aria2' 'pdfarranger' 'hplip' 'rapid-photo-downloader' 'git''wget' 'neofetch''redshift' 'deepin-community-wallpapers')
+                   "Deepin") DESKTOP_PACKAGES+=('deepin' 'deepin-editor' 'deepin-terminal' 'firefox' 'thunderbird' 'telegram-desktop' 'smplayer' 'clementine' 'cheese' 'spectacle' 'file-roller' 'variety' 'qbittorrent' 'gthumb' 'evince' 'calibre' 'libreoffice-still' 'kodi' 'simplescreenrecorder' 'dconf-editor' 'gparted' 'aria2' 'pdfarranger' 'hplip' 'rapid-photo-downloader' 'git' 'wget' 'neofetch' 'redshift' 'deepin-community-wallpapers')
               xinit_config="exec startdde"
               ;;
       "GNOME") DESKTOP_PACKAGES+=('gnome')
