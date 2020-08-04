@@ -15,14 +15,13 @@ ENTER.\nAlternate keys may also be used: '+', '-', and TAB." 7 70
 check_connection() {
   dialog --infobox "Checking internet connection..." 3 50
   # Check if a web page is available
-if ! nc -zw1 archlinux.org 443; then
-dialog --title "Connect to the Internet" \
+  if ! nc -zw1 archlinux.org 443; then
+    dialog --title "Connect to the Internet" \
       --msgbox "The installer was unable to detect a working internet \
 connection. The installation media supports wired network devices on \
 boot. Make sure the cable is plugged in. Wireless users should use the \
-'wifi-menu' command and follow the on-screen instructions to connect to \
-a wireless connection.\n\nOnce you have a working internet connection, \
-retry running the installer." 10 80
+'iwctl' command to connect to a wireless connection.\n\nOnce you have \
+a working internet connection, retry running the installer." 10 80
     reset ; exit 1
   fi
 }
@@ -777,7 +776,7 @@ applications that integrate well with the Budgie desktop." 8 60
       "Cinnamon") DESKTOP_PACKAGES+=('cinnamon' 'cinnamon-translations' 'nemo-fileroller')
                   xinit_config="exec cinnamon-session"
                   ;;
-   "Deepin") DESKTOP_PACKAGES+=( 'deepin-community-wallpapers' 'deepin-topbar' 'qalculate-gtk' 'kodi-x11' 'deepin-control-center' 'deepin-kwin'  'deepin-shortcut-viewer' 'deepin-system-monitor' 'deepin-turbo' 'fractal' 'deepin-terminal' 'deepin-reader' 'deepin-editor' 'firefox' 'sysstat' 'thunderbird' 'telegram-desktop' 'bashtop' 'deepin-music' 'deepin-screenshot' 'deepin-compressor' 'deepin-printer' 'qbittorrent' 'deepin-image-viewer' 'deepin-album' 'kodi' 'simplescreenrecorder' 'guvcview-qt' 'aria2' 'pdfarranger' 'hplip' 'git' 'wget' 'neofetch' 'nano' 'reflector' 'p7zip' 'arj' 'lzip' 'lha' 'sharutils' 'lzop' 'cabextract' 'lrzip' 'youtube-dl' 'mesa-demos' 'tree' 'bind-tools' 'dmidecode' 'hddtemp' 'jshon' 'expac' 'cups' 'cups-pdf' 'xorg-xinit' 'inetutils' 'keepassxc' 'flatpak' 'speedtest-cli' 'wavemon' 'cronie' 'uget' 'python-sip' 'usbutils' 'bash-completion' 'pacman-contrib' 'calibre' 'unarj' 'cpio' 'w3m' 'python-pyqt5')
+                  "Deepin") DESKTOP_PACKAGES+=( 'deepin-community-wallpapers' 'deepin-topbar' 'qalculate-gtk' 'kodi-x11' 'deepin-control-center' 'deepin-kwin'  'deepin-shortcut-viewer' 'deepin-system-monitor' 'deepin-turbo' 'fractal' 'deepin-terminal' 'deepin-reader' 'deepin-editor' 'firefox' 'sysstat' 'thunderbird' 'telegram-desktop' 'bashtop' 'deepin-music' 'deepin-screenshot' 'deepin-compressor' 'deepin-printer' 'qbittorrent' 'deepin-image-viewer' 'deepin-album' 'kodi' 'simplescreenrecorder' 'guvcview-qt' 'aria2' 'pdfarranger' 'hplip' 'git' 'wget' 'neofetch' 'nano' 'reflector' 'p7zip' 'arj' 'lzip' 'lha' 'sharutils' 'lzop' 'cabextract' 'lrzip' 'youtube-dl' 'mesa-demos' 'tree' 'bind-tools' 'dmidecode' 'hddtemp' 'jshon' 'expac' 'cups' 'cups-pdf' 'xorg-xinit' 'inetutils' 'keepassxc' 'flatpak' 'speedtest-cli' 'wavemon' 'cronie' 'uget' 'python-sip' 'usbutils' 'bash-completion' 'pacman-contrib' 'calibre' 'unarj' 'cpio' 'w3m' 'python-pyqt5')
               xinit_config="exec startdde"
               ;;
       "GNOME") DESKTOP_PACKAGES+=('gnome')
@@ -963,7 +962,7 @@ $hypervisor\n\nAny required drivers or utilities will be \
 installed for you." 7 70
       case "$hypervisor" in
         "vmware") DESKTOP_PACKAGES+=('open-vm-tools' 'xf86-video-vmware' 'xf86-input-vmmouse' 'mesa' 'gtkmm' 'gtkmm3') ;;
-        "oracle") DESKTOP_PACKAGES+=('virtualbox-guest-utils' 'virtualbox-guest-modules-arch') ;;
+        "oracle") DESKTOP_PACKAGES+=('virtualbox-guest-utils' 'virtualbox-guest-dkms') ;;
         "parallels") DESKTOP_PACKAGES+=('xf86-video-vesa') ;;
         *) DESKTOP_PACKAGES+=('xf86-video-fbdev') ;;
       esac
